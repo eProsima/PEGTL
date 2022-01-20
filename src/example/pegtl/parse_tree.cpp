@@ -16,24 +16,83 @@ namespace example
    // the grammar
 
    // clang-format off
+   // Some basic constructs
+   struct sign : one< '+', '-'> {};
    struct integer : plus< digit > {};
-   struct variable : identifier {};
 
-   struct plus : pad< one< '+' >, space > {};
-   struct minus : pad< one< '-' >, space > {};
-   struct multiply : pad< one< '*' >, space > {};
-   struct divide : pad< one< '/' >, space > {};
+   // FIELDNAME
+   struct dot_op : one< '.' > {};
+   struct fieldname_part : seq< identifier, opt< seq< one<'['>, integer, one<']'> > > > {};
+   struct fieldname : list<fieldname_part, dot_op> {};
 
+   // CHARVALUE, STRING, ENUMERATEDVALUE
+   struct open_quote : one< '`', '\'' > {};
+   struct close_quote : one< '\'' > {};
+   struct char_value : seq< open_quote, any, close_quote > {};
+   struct string_value : seq< open_quote, star< not_one< '\'', '\r', '\n'> >, close_quote > {};
+   struct enumerated_value : seq< open_quote, identifier, close_quote > {};
+
+   // BOOLEANVALUE
+   struct false_value : pad< TAO_PEGTL_KEYWORD("FALSE"), space > {};
+   struct true_value : pad< TAO_PEGTL_KEYWORD("TRUE"), space > {};
+   struct boolean_value : sor<false_value, true_value> {};
+
+   // INTEGERVALUE, FLOATVALUE
+   struct integer_value : seq< opt< sign >, integer > {};
+   struct fractional : seq< dot_op, integer > {};
+   struct exponent : seq< one< 'e', 'E' >, integer_value > {};
+   struct float_value : seq< integer_value, opt< fractional >, opt< exponent > > {};
+
+   // PARAMETER
+   struct parameter_value : seq< one< '%' >, digit, opt< digit > > {};
+   
+   // Keyword based operators
+   struct and_op : pad< TAO_PEGTL_KEYWORD("AND"), space > {};
+   struct or_op : pad< TAO_PEGTL_KEYWORD("OR"), space> {};
+   struct not_op : pad< TAO_PEGTL_KEYWORD("NOT"), space> {};
+   struct between_op : pad< TAO_PEGTL_KEYWORD("BETWEEN"), space> {};
+   struct not_between_op : pad< TAO_PEGTL_KEYWORD("NOT BETWEEN"), space> {};
+
+   // RelOp
+   struct eq_op : pad< one<'='>, space> {};
+   struct gt_op : pad< one<'>'>, space> {};
+   struct ge_op : pad< TAO_PEGTL_KEYWORD(">="), space> {};
+   struct lt_op : pad< one<'<'>, space> {};
+   struct le_op : pad< TAO_PEGTL_KEYWORD("<="), space> {};
+   struct ne_op : pad< sor< TAO_PEGTL_KEYWORD("<>"), TAO_PEGTL_KEYWORD("!=") >, space> {};
+   struct like_op : pad< sor< TAO_PEGTL_KEYWORD("LIKE"), TAO_PEGTL_KEYWORD("like") >, space> {};
+   struct rel_op : sor< like_op, ne_op, le_op, ge_op, lt_op, gt_op, eq_op > {};
+ 
+   // Parameter, Range
+   struct Literal : sor< boolean_value, integer_value, float_value, char_value, enumerated_value, string_value > {};
+   struct Parameter : sor< Literal, parameter_value > {};
+   struct Range : seq< Parameter, and_op, Parameter > {};
+
+   // Predicates
+   struct BetweenPredicate : seq< fieldname, sor< not_between_op, between_op >, Range > {};
+   struct ComparisonPredicate : sor<
+                                     seq< Parameter, rel_op, fieldname >,
+                                     seq< fieldname, rel_op, Parameter >,
+                                     seq< fieldname, rel_op, fieldname >
+                                   > {};
+   struct Predicate : sor< ComparisonPredicate, BetweenPredicate > {};
+
+   // Brackets
    struct open_bracket : seq< one< '(' >, star< space > > {};
    struct close_bracket : seq< star< space >, one< ')' > > {};
 
-   struct expression;
-   struct bracketed : if_must< open_bracket, expression, close_bracket > {};
-   struct value : sor< integer, variable, bracketed >{};
-   struct product : list_must< value, sor< multiply, divide > > {};
-   struct expression : list_must< product, sor< plus, minus > > {};
+   // Condition, FilterExpression
+   struct Condition;
+   struct ConditionList : list_must< Condition, sor< and_op, or_op > > {};
+   struct Condition : sor<
+                           Predicate,
+                           seq< open_bracket, ConditionList, close_bracket >,
+                           seq< not_op, ConditionList >
+                         > {};
+   struct FilterExpression : ConditionList {};
 
-   struct grammar : must< expression, eof > {};
+   // Main grammar
+   struct grammar : must< FilterExpression, eof > {};
    // clang-format on
 
    // after a node is stored successfully, you can add an optional transformer like this:
@@ -82,16 +141,29 @@ namespace example
    using selector = parse_tree::selector<
       Rule,
       parse_tree::store_content::on<
-         integer,
-         variable >,
+         boolean_value,
+         integer_value,
+         float_value,
+         char_value,
+         enumerated_value,
+         string_value,
+         parameter_value,
+         fieldname_part >,
       parse_tree::remove_content::on<
-         plus,
-         minus,
-         multiply,
-         divide >,
-      rearrange::on<
-         product,
-         expression > >;
+         eq_op,
+         gt_op,
+         ge_op,
+         lt_op,
+         le_op,
+         ne_op,
+         like_op,
+         and_op,
+         or_op,
+         not_op,
+         dot_op,
+         between_op,
+         not_between_op >,
+      rearrange::on< fieldname, ComparisonPredicate, BetweenPredicate, Range, Condition, FilterExpression > >;
 
 }  // namespace example
 
@@ -106,6 +178,8 @@ int main( int argc, char** argv )
    argv_input<> in( argv, 1 );
    try {
       const auto root = parse_tree::parse< example::grammar, example::selector >( in );
+      if( nullptr == root )
+         throw std::exception( "parse returned nullptr" );
       parse_tree::print_dot( std::cout, *root );
       return 0;
    }
